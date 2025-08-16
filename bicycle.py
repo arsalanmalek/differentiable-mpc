@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 class BicycleDx(torch.nn.Module):
     """
-    Kinematic bicycle model in CartpoleDx-style API.
+    Kinematic bicycle model API.
 
     State vector (n_state = 5):
         [ X, Y, cos(theta), sin(theta), v ]
@@ -32,7 +32,7 @@ class BicycleDx(torch.nn.Module):
         # model params: dt and wheelbase L
         if params is None:
             # (dt, L)
-            self.params = Variable(torch.Tensor((0.1, 2.5)))
+            self.params = Variable(torch.Tensor((0.1, 1.0)))
         else:
             self.params = params
         assert len(self.params) == 2
@@ -42,11 +42,12 @@ class BicycleDx(torch.nn.Module):
         # control limits
         self.accel_lim = 2.0
         self.steer_lim = 0.5  # radians, adjust as needed
+        self.goal_speed = 2.5
 
         # simple goal/cost defaults (match Cartpole style)
         # goal_state in state-coordinates: [X, Y, cos(th), sin(th), v]
-        self.goal_state = torch.Tensor([0.0, 0.0, 1.0, 0.0, 1.0])
-        self.goal_weights = torch.Tensor([1.0, 1.0, 0.5, 0.5, 0.2])
+        self.goal_state = torch.Tensor([0.0, 0.0, 1.0, 0.0, self.goal_speed])
+        self.goal_weights = torch.Tensor([0.0, 0.15, 0.0, 1.0, 0.5])
         self.ctrl_penalty = 0.001
 
         # solver related (kept for interface parity)
@@ -123,6 +124,18 @@ class BicycleDx(torch.nn.Module):
             state_next = state_next.squeeze(0)
         return state_next
 
+    def get_true_obj(self):
+        """
+        Return Quadratic cost weights (q) and linear term (p) in
+        the same format cartpole uses: returns (q, p) both Variables
+        q: [state_weights, control_weights]
+        p: linear term (used to make objective -sqrt(w)*goal in state part)
+        """
+        q = torch.cat((self.goal_weights, self.ctrl_penalty * torch.ones(self.n_ctrl)))
+        px = -torch.sqrt(self.goal_weights) * self.goal_state
+        p = torch.cat((px, torch.zeros(self.n_ctrl)))
+        return Variable(q), Variable(p)
+
     def get_frame(self, state, ax=None):
         """
         Simple top-down visualization of vehicle pose.
@@ -153,18 +166,6 @@ class BicycleDx(torch.nn.Module):
         ax.set_xlim(X - lim, X + lim)
         ax.set_ylim(Y - lim, Y + lim)
         return fig, ax
-
-    def get_true_obj(self):
-        """
-        Return Quadratic cost weights (q) and linear term (p) in
-        the same format cartpole uses: returns (q, p) both Variables
-        q: [state_weights, control_weights]
-        p: linear term (used to make objective -sqrt(w)*goal in state part)
-        """
-        q = torch.cat((self.goal_weights, self.ctrl_penalty * torch.ones(self.n_ctrl)))
-        px = -torch.sqrt(self.goal_weights) * self.goal_state
-        p = torch.cat((px, torch.zeros(self.n_ctrl)))
-        return Variable(q), Variable(p)
 
 
 if __name__ == "__main__":

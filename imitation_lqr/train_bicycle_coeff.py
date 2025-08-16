@@ -174,6 +174,12 @@ def main():
     loss_f.write("im_loss,mse\n")
     loss_f.flush()
 
+    dx = BicycleDx()
+
+    q, p = dx.get_true_obj()
+    expert_Q = torch.diag(q).unsqueeze(0).unsqueeze(0).repeat(args.T, n_batch, 1, 1)
+    expert_p = p.unsqueeze(0).repeat(args.T, n_batch, 1)
+
     def get_loss(x_init, path):
         x_true, u_true, __ = mpc.MPC(
             n_state,
@@ -187,7 +193,7 @@ def main():
             exit_unconverged=False,
             detach_unconverged=False,
             n_batch=n_batch,
-        )(x_init, QuadCost(expert_C, expert_c), BicycleDx())
+        )(x_init, QuadCost(expert_Q, expert_p), dx)
 
         x_pred, u_pred, __ = mpc.MPC(
             n_state,
@@ -201,7 +207,7 @@ def main():
             exit_unconverged=False,
             detach_unconverged=False,
             n_batch=n_batch,
-        )(x_init, QuadCost(C, c), BicycleDx())
+        )(x_init, QuadCost(C, c), dx)
 
         traj_loss = torch.mean((u_true - u_pred) ** 2) + torch.mean(
             (x_true - x_pred) ** 2
