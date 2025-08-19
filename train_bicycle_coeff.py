@@ -1,252 +1,193 @@
-import torch
-import torch.optim as optim
-
-import sys
-
+# il_bicycle_exp.py
 import os
-import shutil
-
-sys.path.append(os.path.abspath(os.path.join(__file__, "../../")))
+import time
+import argparse
+import numpy as np
+import torch
+from torch import optim
+from bicycle import BicycleDx
 
 from mpc.mpc import mpc
-from bicycle import BicycleDx
-from mpc.mpc.mpc import GradMethods, QuadCost, LinDx
-from IPython.core import ultratb
-
-sys.excepthook = ultratb.FormattedTB(mode="Verbose", call_pdb=1)
-
-import argparse
-import setproctitle
+from mpc.mpc.mpc import QuadCost
 
 
-def expert_mpc(state):
-    expert_seed = 42
-    torch.manual_seed(expert_seed)
-
-
-def compute_objective_quadratic(
-    path_points, goal_speed, wp=0.15, ws=0.5, wa=1.0, n_state=4, n_ctrl=2, device="cpu"
-):
+def make_constant_cost(q_vec, p_vec, T, n_batch, device):
     """
-    Create per-timestep quadratic cost (C, c) from path and goal speed.
-
-    States: [x, y, theta, v]
-    Controls: [u1, u2] (not penalized here unless added manually)
-
-    Returns:
-        C (n_state+n_ctrl, n_state+n_ctrl)
-        c (n_state+n_ctrl)
+    Build (Q, p) tensors for QuadCost:
+      Q: T x B x (nx+nu) x (nx+nu)  (diagonal only, but stored as full diag matrices)
+      p: T x B x (nx+nu)
     """
+    n_sc = q_vec.numel()
+    Q = torch.diag(q_vec).unsqueeze(0).unsqueeze(0).repeat(T, n_batch, 1, 1).to(device)
+    p = p_vec.unsqueeze(0).unsqueeze(0).repeat(T, n_batch, 1).to(device)
+    return Q, p
 
-    n_sc = n_state + n_ctrl
-    C = torch.zeros(n_sc, n_sc, device=device)
-    c = torch.zeros(n_sc, device=device)
 
-    # Reference point: here we just take the first path point
-    x_ref, y_ref = path_points[0, 0].item(), path_points[0, 1].item()
-
-    # Heading reference: tangent to first segment
-    if path_points.shape[0] >= 2:
-        dx = path_points[1, 0] - path_points[0, 0]
-        dy = path_points[1, 1] - path_points[0, 1]
-        theta_ref = torch.atan2(dy, dx).item()
+def sample_path(T, kind="straight", amplitude=3.0, frequency=0.2, device="cpu"):
+    # (T+1, 2) path points [x, y]
+    x = torch.linspace(0, 30, T + 1, device=device)
+    if kind == "straight":
+        y = torch.zeros_like(x)
     else:
-        theta_ref = 0.0
-
-    # --- Diagonal quadratic terms (trainable) ---
-    coeffs = torch.tensor([wp, wp, wa, ws], device=device, requires_grad=True)
-    C[range(n_state), range(n_state)] = coeffs
-
-    # --- Linear terms ---
-    c[0] = -2 * wp * x_ref
-    c[1] = -2 * wp * y_ref
-    c[2] = -2 * wa * theta_ref
-    c[3] = -2 * ws * goal_speed
-
-    return C, c, coeffs
+        y = amplitude * torch.sin(frequency * x)
+    return torch.stack((x, y), dim=1)
 
 
 def sample_initial_state_near_path(
-    path, max_pos_offset=5.0, max_heading_offset=1.0, max_speed=10.0
+    path, max_pos_offset=2.0, max_heading_offset=0.7, max_speed=6.0
 ):
-    """
-    Sample a random initial state near a given path.
-
-    Args:
-        path: Tensor of shape (T+1, 2), path coordinates
-        max_pos_offset: max x/y offset from path point (meters)
-        max_heading_offset: max deviation from path tangent (radians)
-        max_speed: upper bound for random initial speed (m/s)
-
-    Returns:
-        x0: Tensor of shape (n_state,) = [x, y, θ, v]
-    """
-    T_plus_1 = path.shape[0]
-    idx = torch.randint(0, T_plus_1 - 1, (1,)).item()
-
-    # Path point and next for tangent direction
-    pt = path[idx]
-    pt_next = path[idx + 1]
-    tangent = pt_next - pt
-    base_theta = torch.atan2(tangent[1], tangent[0])
-
-    # Add noise
-    pos_noise = torch.randn(2) * max_pos_offset
-    theta_noise = (torch.rand(1) - 0.5) * 2 * max_heading_offset
+    # x0 = [X, Y, cos(th), sin(th), v]
+    T1 = path.shape[0]
+    i = torch.randint(0, T1 - 1, (1,)).item()
+    p = path[i]
+    p2 = path[i + 1]
+    tangent = p2 - p
+    theta = (
+        torch.atan2(tangent[1], tangent[0])
+        + (torch.rand(1) - 0.5) * 2 * max_heading_offset
+    )
     v = torch.rand(1) * max_speed
-
-    x = pt[0] + pos_noise[0]
-    y = pt[1] + pos_noise[1]
-    theta = base_theta + theta_noise
-
-    x0 = torch.tensor([x, y, theta.item(), v.item()])
+    pos_noise = (torch.rand(2) - 0.5) * 2 * max_pos_offset
+    X = p[0] + pos_noise[0]
+    Y = p[1] + pos_noise[1]
+    x0 = torch.tensor(
+        [
+            X.item(),
+            Y.item(),
+            torch.cos(theta).item(),
+            torch.sin(theta).item(),
+            v.item(),
+        ],
+        dtype=torch.float32,
+    )
     return x0
+
+
+def run_mpc(
+    dx, x_init, q_vec, p_vec, T, u_init=None, u_lower=None, u_upper=None, n_batch=1
+):
+    device = x_init.device
+    nx, nu = dx.n_state, dx.n_ctrl
+    Q, p = make_constant_cost(q_vec, p_vec, T, n_batch, device)
+
+    ctrl = mpc.MPC(
+        nx,
+        nu,
+        T,
+        u_lower=u_lower,
+        u_upper=u_upper,
+        lqr_iter=100,
+        n_batch=n_batch,
+        exit_unconverged=False,
+        verbose=0,
+        u_init=u_init,  # warm-start actions: T x B x nu
+        grad_method=mpc.GradMethods.AUTO_DIFF,
+    )
+
+    x_init_b = x_init.unsqueeze(0) if x_init.ndim == 1 else x_init  # B x nx
+    x_traj, u_traj, _ = ctrl(x_init_b, QuadCost(Q, p), dx)
+    return x_traj, u_traj  # shapes: T x B x nx, T x B x nu
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n_state", type=int, default=3)  # x - state vector elements
-    parser.add_argument("--n_ctrl", type=int, default=3)  # u - control vector elements
-    parser.add_argument("--T", type=int, default=5)
-    parser.add_argument("--save", type=str)
-    parser.add_argument("--work", type=str, default="work")
-    parser.add_argument("--no-cuda", action="store_true")
+    parser.add_argument("--T", type=int, default=20)
+    parser.add_argument("--n_batch", type=int, default=32)
+    parser.add_argument("--n_epoch", type=int, default=300)
+    parser.add_argument("--learn_rate", type=float, default=0.006)
+    parser.add_argument("--no_cuda", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--path_kind", type=str, default="straight", choices=["straight", "sine"]
+    )
     args = parser.parse_args()
 
-    args.cuda = not args.no_cuda and torch.cuda.is_available()
-    t = ".".join(
-        ["{}={}".format(x, getattr(args, x)) for x in ["n_state", "n_ctrl", "T"]]
-    )
-    setproctitle.setproctitle("lqr." + t + ".{}".format(args.seed))
-    if args.save is None:
-        args.save = os.path.join(args.work, t, str(args.seed))
-
-    if os.path.exists(args.save):
-        shutil.rmtree(args.save)
-    os.makedirs(args.save, exist_ok=True)
-
-    device = "cuda" if args.cuda else "cpu"
-
-    n_state, n_ctrl = args.n_state, args.n_ctrl
-    n_sc = n_state + n_ctrl
-    # alpha = 0.2
-
-    expert_C, expert_c = compute_objective_quadratic(
-        path,
-        goal_speed=10.0,
-        wp=0.15,
-        ws=0.5,
-        wa=1.0,
-        n_state=n_state,
-        n_ctrl=n_ctrl,
-        device=device,
-    )
     torch.manual_seed(args.seed)
-    # F = [A|B]
-    # xt+1 = A.xt + B.ut --> [A|B]*[xt ut].T
-    # xt+1 = F @ tau_t
-    # no f_t term here
-    # A = (torch.eye(n_state) + alpha * torch.randn(n_state, n_state)).to(device)
-    # B = torch.randn(n_state, n_ctrl).to(device)
-    # OBJ = tau.C.tau + c
-    # C = torch.eye(n_sc).to(device).requires_grad_()
-    # c = torch.randn(n_sc).to(device).requires_grad_()
+    device = "cuda" if (not args.no_cuda and torch.cuda.is_available()) else "cpu"
 
-    C, c, cost_coeffs = compute_objective_quadratic(
-        path,
-        goal_speed=10.0,
-        wp=0.1,
-        ws=0.1,
-        wa=0.1,
-        n_state=n_state,
-        n_ctrl=n_ctrl,
-        device=device,
-    )
-    opt = torch.optim.RMSprop([cost_coeffs], lr=1e-3)
+    # --- Dynamics
+    dx = BicycleDx().to(device)
+    nx, nu = dx.n_state, dx.n_ctrl
+    n_sc = nx + nu
 
-    # u_lower, u_upper = -10., 10.
-    u_lower, u_upper = None, None
-    delta = u_init = None
+    # --- "Expert" cost (fixed ground truth)
+    true_q, true_p = dx.get_true_obj()
+    true_q = true_q.to(device)
+    true_p = true_p.to(device)
 
-    fname = os.path.join(args.save, "losses.csv")
-    loss_f = open(fname, "w")
-    loss_f.write("im_loss,mse\n")
-    loss_f.flush()
+    # --- Learnable cost (diagonal only)
+    # Parameterize diag via logits -> sigmoid -> positive, and p via p = sqrt(q) * learn_p (as in their repo)
+    learn_q_logit = torch.zeros_like(true_q, device=device, requires_grad=True)
+    learn_p_raw = torch.zeros_like(true_p, device=device, requires_grad=True)
 
-    dx = BicycleDx()
+    opt = optim.RMSprop([learn_q_logit, learn_p_raw], lr=args.learn_rate)
 
-    q, p = dx.get_true_obj()
-    expert_Q = torch.diag(q).unsqueeze(0).unsqueeze(0).repeat(args.T, n_batch, 1, 1)
-    expert_p = p.unsqueeze(0).repeat(args.T, n_batch, 1)
+    # Warm-start action buffer for MPC (helps stability)
+    warmstart = torch.zeros(args.T, args.n_batch, nu, device=device)
 
-    def get_loss(x_init, path):
-        x_true, u_true, __ = mpc.MPC(
-            n_state,
-            n_ctrl,
-            args.T,
-            u_lower=u_lower,
-            u_upper=u_upper,
-            u_init=u_init,
-            lqr_iter=100,
-            verbose=-1,
-            exit_unconverged=False,
-            detach_unconverged=False,
-            n_batch=n_batch,
-        )(x_init, QuadCost(expert_Q, expert_p), dx)
-
-        x_pred, u_pred, __ = mpc.MPC(
-            n_state,
-            n_ctrl,
-            args.T,
-            u_lower=u_lower,
-            u_upper=u_upper,
-            u_init=u_init,
-            lqr_iter=100,
-            verbose=-1,
-            exit_unconverged=False,
-            detach_unconverged=False,
-            n_batch=n_batch,
-        )(x_init, QuadCost(C, c), dx)
-
-        traj_loss = torch.mean((u_true - u_pred) ** 2) + torch.mean(
-            (x_true - x_pred) ** 2
-        )
-        return traj_loss
-
-    n_batch = 128
-    T = args.T
-
-    # 128 * 5k samples to guess the dynamics model
-    for i in range(5000):
-        path = torch.stack(
+    # Training loop
+    for epoch in range(1, args.n_epoch + 1):
+        # --- sample a mini-batch of initial states and paths
+        path = sample_path(args.T, kind=args.path_kind, device=device)
+        x_inits = torch.stack(
             [
-                torch.linspace(0, 30, T + 1),
-                torch.zeros(T + 1),
-                #    + torch.randn(1)
+                sample_initial_state_near_path(path).to(device)
+                for _ in range(args.n_batch)
             ],
-            dim=1,
+            dim=0,
         )
-        x_init = sample_initial_state_near_path(path)
-        traj_loss = get_loss(x_init, path)
+
+        # --- Expert rollouts (targets)
+        with torch.no_grad():
+            expert_x, expert_u = run_mpc(
+                dx,
+                x_inits,
+                true_q,
+                true_p,
+                args.T,
+                u_init=warmstart,
+                n_batch=args.n_batch,
+            )
+
+        # --- Predicted rollouts under learned cost
+        q_hat = torch.sigmoid(learn_q_logit)  # (n_sc,)
+        p_hat = torch.sqrt(q_hat) * learn_p_raw  # (n_sc,)
+        pred_x, pred_u = run_mpc(
+            dx, x_inits, q_hat, p_hat, args.T, u_init=warmstart, n_batch=args.n_batch
+        )
+
+        # update warmstart with current pred actions (T x B x nu)
+        warmstart = pred_u.detach()
+
+        # --- Imitation loss on actions (+ small state loss helps sometimes)
+        im_u = (expert_u.detach() - pred_u).pow(2).mean()
+        im_x = (expert_x.detach() - pred_x).pow(2).mean()
+        loss = im_u + 0.1 * im_x
 
         opt.zero_grad()
-        traj_loss.backward()
+        loss.backward()
+        # OPTIONAL: freeze some entries if you only want to learn specific diagonals
+        # e.g., keep X/cos(theta) costs = 0:
+        # idx_freeze = torch.tensor([0, 2], device=device)  # indices in state diag
+        # learn_q_logit.grad[idx_freeze] = 0.0
         opt.step()
 
-        model_loss = torch.mean((C - expert_C) ** 2) + torch.mean((c - expert_c) ** 2)
+        if epoch % 10 == 0 or epoch == 1:
+            with torch.no_grad():
+                q_err = torch.norm(q_hat - true_q).item()
+                p_err = torch.norm(p_hat - true_p).item()
+                print(
+                    f"[{epoch:04d}] loss={loss.item():.4f} | ||q-q*||={q_err:.4f} ||p-p*||={p_err:.4f}"
+                )
 
-        loss_f.write("{},{}\n".format(traj_loss.item(), model_loss.item()))
-        loss_f.flush()
-
-        plot_interval = 100
-        if i % plot_interval == 0:
-            os.system('./plot.py "{}" &'.format(args.save))
-        print(
-            "{:04d}: traj_loss: {:.4f} model_loss: {:.4f}".format(
-                i, traj_loss.item(), model_loss.item()
-            )
-        )
+    print("\n=== Learned cost (diag only) ===")
+    with torch.no_grad():
+        q_learn = torch.sigmoid(learn_q_logit).cpu()
+        p_learn = torch.sqrt(q_learn) * learn_p_raw.cpu()
+        print("q* (true):   ", true_q.cpu().numpy())
+        print("q  (learned):", q_learn.numpy())
+        print("p* (true):   ", true_p.cpu().numpy())
+        print("p  (learned):", p_learn.numpy())
 
 
 if __name__ == "__main__":
