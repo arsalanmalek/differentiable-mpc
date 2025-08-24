@@ -102,8 +102,9 @@ class BicycleDynamicsWithCost(nn.Module):
         q_state = self.goal_weights.clone().detach()
         q_ctrl = self.ctrl_penalty * torch.ones(self.n_ctrl, dtype=torch.float32)
         q = torch.cat((q_state, q_ctrl), dim=0)
-        sqrt_q_state = torch.sqrt(torch.clamp(q_state, min=1e-12))
-        p_state = -sqrt_q_state * self.goal_state
+        # sqrt_q_state = torch.sqrt(torch.clamp(q_state, min=1e-12))
+        # p_state = -sqrt_q_state * self.goal_state
+        p_state = -q_state * self.goal_state
         p_ctrl = torch.zeros(self.n_ctrl, dtype=torch.float32)
         p = torch.cat((p_state, p_ctrl), dim=0)
         return q, p

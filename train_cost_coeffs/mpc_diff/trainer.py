@@ -35,7 +35,6 @@ class LearnableGoalCost(nn.Module):
     """
     Learns state goal weights (n_state) via an unconstrained parameter raw_goal_weights.
     goal_weights = softplus(raw_goal_weights) (=> positive).
-    p_state is derived as: p_state = - sqrt(q_state) * goal_state
     Control penalties q_ctrl are kept fixed (scalar from dx.ctrl_penalty).
     """
 
@@ -163,16 +162,15 @@ def train_il_bicycle(
     T=20,
     n_batch=32,
     n_epochs=300,
-    n_train=1024,
-    n_val=256,
-    n_test=256,
-    learn_rate=1e-2,
+    n_train=100,
+    n_test=12,
+    learn_rate=0.07,
     freeze_indices=None,
 ):
     torch.manual_seed(0)
     np.random.seed(0)
 
-    dx = BicycleDx().to(device)
+    dx = BicycleDynamicsWithCost().to(device)
     nx, nu = dx.n_state, dx.n_ctrl
     n_sc = nx + nu
 
@@ -183,7 +181,6 @@ def train_il_bicycle(
     X_train, U_train, q_true_arr, p_true_arr = generate_expert_dataset(
         dx, T, n_train, device
     )
-    X_val, U_val, _, _ = generate_expert_dataset(dx, T, n_val, device)
     X_test, U_test, _, _ = generate_expert_dataset(dx, T, n_test, device)
 
     x0_train = torch.tensor(
@@ -191,27 +188,19 @@ def train_il_bicycle(
     )  # (N, nx)
     u_train = torch.tensor(U_train, dtype=torch.float32, device=device)  # (N, T, nu)
 
-    x0_val = torch.tensor(X_val[:, 0, :], dtype=torch.float32, device=device)
-    u_val = torch.tensor(U_val, dtype=torch.float32, device=device)
-
     x0_test = torch.tensor(X_test[:, 0, :], dtype=torch.float32, device=device)
     u_test = torch.tensor(U_test, dtype=torch.float32, device=device)
 
     train_ds = TensorDataset(x0_train, u_train)
-    val_ds = TensorDataset(x0_val, u_val)
     test_ds = TensorDataset(x0_test, u_test)
 
     train_loader = DataLoader(train_ds, batch_size=n_batch, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=n_batch, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=n_batch, shuffle=False)
 
     # Expert q,p (vectors) (for diagnostic/printing)
     q_true = torch.tensor(q_true_arr, dtype=torch.float32, device=device)
     p_true = torch.tensor(p_true_arr, dtype=torch.float32, device=device)
 
-    # -------------------------
-    # Learner: structured LearnableGoalCost (state-only)
-    # -------------------------
     learn_cost = LearnableGoalCost(
         n_state=nx,
         n_ctrl=nu,
@@ -302,7 +291,7 @@ def train_il_bicycle(
         val_loss = 0.0
         n_val_seen = 0
         with torch.no_grad():
-            for x0_batch, u_batch in val_loader:
+            for x0_batch, u_batch in test_loader:
                 q_vec, p_vec, _ = learn_cost()
                 x_pred, u_pred = run_mpc_batch(x0_batch, q_vec, p_vec)
                 u_pred_bt = u_pred.transpose(0, 1)
@@ -353,17 +342,13 @@ def train_il_bicycle(
     return learn_cost
 
 
-# -------------------------
-# CLI
-# -------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--T", type=int, default=20)
     parser.add_argument("--n_batch", type=int, default=32)
-    parser.add_argument("--n_epochs", type=int, default=200)
-    parser.add_argument("--n_train", type=int, default=1024)
-    parser.add_argument("--n_val", type=int, default=256)
-    parser.add_argument("--n_test", type=int, default=256)
+    parser.add_argument("--n_epochs", type=int, default=10)
+    parser.add_argument("--n_train", type=int, default=20)
+    parser.add_argument("--n_test", type=int, default=2)
     parser.add_argument("--learn_rate", type=float, default=1e-2)
     parser.add_argument("--no-cuda", action="store_true")
     parser.add_argument(
@@ -384,7 +369,6 @@ if __name__ == "__main__":
         n_batch=args.n_batch,
         n_epochs=args.n_epochs,
         n_train=args.n_train,
-        n_val=args.n_val,
         n_test=args.n_test,
         learn_rate=args.learn_rate,
         freeze_indices=args.freeze_idx,
