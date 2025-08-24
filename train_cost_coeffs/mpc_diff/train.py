@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 import torch
 from torch import optim
-from bicycle import BicycleDx
+from train_cost_coeffs.mpc_diff.dynamics_bicycle import BicycleDx
 
 from mpc.mpc import mpc
 from mpc.mpc.mpc import QuadCost
