@@ -9,14 +9,19 @@ Default: freeze state indices [0, 3] (X pos and sin(theta)).
 """
 
 import os
+from os.path import join, dirname
+import sys
 import argparse
 import time
+
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
-import torch.nn.functional as F
+
+sys.path.append(os.path.abspath(dirname(dirname(dirname(__file__)))))
 
 from mpc.mpc import mpc
 from mpc.mpc.mpc import QuadCost
