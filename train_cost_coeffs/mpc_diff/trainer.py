@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 IL_Exp_bicycle.py
 
@@ -6,7 +5,7 @@ Imitation learning experiment for bicycle dynamics.
 Learns structured goal_weights (state-only). p is derived as
 p_state = - sqrt(q_state) * goal_state, so cost = (x - x_goal)^T Q (x - x_goal) + u^T R u.
 
-Default: freeze state indices [0, 3] (X pos and sin(theta)) — configurable via CLI.
+Default: freeze state indices [0, 3] (X pos and sin(theta)).
 """
 
 import os
@@ -21,108 +20,7 @@ import torch.nn.functional as F
 
 from mpc.mpc import mpc
 from mpc.mpc.mpc import QuadCost
-
-
-# -------------------------
-# Bicycle dynamics (nonlinear)
-# -------------------------
-class BicycleDx(nn.Module):
-    """
-    State: [X, Y, cos(theta), sin(theta), v]  (n_state = 5)
-    Control: [a, delta]                       (n_ctrl  = 2)
-    get_true_obj() returns q (diag) and p vector in AMOS style
-    """
-
-    def __init__(self, params=None):
-        super().__init__()
-        # params: (dt, L)
-        if params is None:
-            params = torch.tensor((0.1, 1.0), dtype=torch.float32)
-        # keep params as buffer-like (not learnable)
-        self.register_buffer("params", params)
-        self.n_state = 5
-        self.n_ctrl = 2
-
-        # defaults (expert)
-        self.goal_speed = 2.5
-        # goal_state order: [X, Y, cosθ, sinθ, v]
-        self.register_buffer(
-            "goal_state",
-            torch.tensor([0.0, 0.0, 1.0, 0.0, self.goal_speed], dtype=torch.float32),
-        )
-        # default diag weights for expert (state)
-        # Penalize Y and sinθ and speed by default; X and cosθ free
-        self.register_buffer(
-            "goal_weights",
-            torch.tensor([0.0, 0.15, 0.0, 1.0, 0.5], dtype=torch.float32),
-        )
-        self.ctrl_penalty = 0.001
-
-        # control limits
-        self.accel_lim = 2.0
-        self.steer_lim = 0.5
-
-    def forward(self, state, u):
-        """
-        input:
-          state: (...,5) with (X, Y, cos, sin, v) OR (batch,5)
-          u:     (...,2) with (a, delta)
-        returns next state same shape
-        """
-        squeeze = state.ndim == 1
-        if squeeze:
-            state = state.unsqueeze(0)
-            u = u.unsqueeze(0)
-
-        dt = float(self.params[0].item())
-        L = float(self.params[1].item())
-
-        # clamp controls
-        a = torch.clamp(u[..., 0], -self.accel_lim, self.accel_lim)
-        delta = torch.clamp(u[..., 1], -self.steer_lim, self.steer_lim)
-
-        X, Y, cth, sth, v = torch.unbind(state, dim=-1)
-        th = torch.atan2(sth, cth)
-
-        beta = torch.atan(0.5 * torch.tan(delta))  # Lf = Lr = L/2
-
-        dx = v * torch.cos(th + beta)
-        dy = v * torch.sin(th + beta)
-        theta_dot = (v / L) * torch.sin(beta)
-        dcth = -sth * theta_dot
-        dsth = cth * theta_dot
-        dv = a
-
-        X = X + dt * dx
-        Y = Y + dt * dy
-        cth = cth + dt * dcth
-        sth = sth + dt * dsth
-        v = v + dt * dv
-
-        # renormalize cos/sin to avoid drift
-        norm = torch.sqrt(cth * cth + sth * sth + 1e-12)
-        cth = cth / norm
-        sth = sth / norm
-
-        xnext = torch.stack((X, Y, cth, sth, v), dim=-1)
-        if squeeze:
-            xnext = xnext.squeeze(0)
-        return xnext
-
-    def get_true_obj(self):
-        """
-        Returns (q, p) vectors in AMOS format:
-          q: (n_state + n_ctrl,) diag entries
-          p: (n_state + n_ctrl,) linear term such that p_state = -sqrt(q_state)*goal_state
-        """
-        q_state = self.goal_weights.clone().detach()
-        q_ctrl = self.ctrl_penalty * torch.ones(self.n_ctrl, dtype=torch.float32)
-        q = torch.cat((q_state, q_ctrl), dim=0)
-        sqrt_q_state = torch.sqrt(torch.clamp(q_state, min=1e-12))
-        p_state = -sqrt_q_state * self.goal_state
-        p_ctrl = torch.zeros(self.n_ctrl, dtype=torch.float32)
-        p = torch.cat((p_state, p_ctrl), dim=0)
-        return q, p
+from train_cost_coeffs.mpc_diff.dynamics_bicycle import BicycleDynamicsWithCost
 
 
 # -------------------------
