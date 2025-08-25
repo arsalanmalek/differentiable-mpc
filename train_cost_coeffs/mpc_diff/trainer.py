@@ -220,7 +220,8 @@ def train_il_bicycle(
             if 0 <= idx < nx:
                 freeze_mask_state[idx] = True
 
-    optimizer = optim.RMSprop(learn_cost.parameters(), lr=learn_rate)
+    optimizer = optim.adam.Adam(learn_cost.parameters(), lr=learn_rate)
+    # optimizer = optim.RMSprop(learn_cost.parameters(), lr=learn_rate)
 
     # warmstart buffer for MPC (T x B x nu)
     warmstart = torch.zeros(T, n_batch, nu, device=device)
@@ -376,3 +377,13 @@ if __name__ == "__main__":
         learn_rate=args.learn_rate,
         freeze_indices=args.freeze_idx,
     )
+
+# Run 1: RMSProp LR: 5e-3
+# Start at:
+# Epoch Loss:  2.9116614818573
+# Weights:  tensor([0.1000, 0.1000, 0.1099, 0.1000, 0.1049], grad_fn=<AddBackward0>)
+# Weights:  tensor([X, 0.1000, 0.1099, X, 0.1049], grad_fn=<AddBackward0>)
+# Breaken at:
+# Epoch Loss:  1.4234720468521118
+# Weights:  tensor([0.1000, 0.0810, 0.0869, 0.1000, 0.3558], grad_fn=<AddBackward0>)
+# Weights:  tensor([X, 0.0810, 0.0869, X, 0.3558], grad_fn=<AddBackward0>)
