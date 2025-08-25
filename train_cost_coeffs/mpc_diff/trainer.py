@@ -8,6 +8,8 @@ p_state = - sqrt(q_state) * goal_state, so cost = (x - x_goal)^T Q (x - x_goal) 
 Default: freeze state indices [0, 3] (X pos and sin(theta)).
 """
 
+# TODO: dynamics rollout visualization for true and each epoch prediction on test set
+
 import os
 from os.path import join, dirname
 import sys
@@ -286,53 +288,54 @@ def train_il_bicycle(
             warmstart[:, :B, :] = u_pred.detach()
 
         epoch_loss /= float(n_seen)
+        print("Epoch Loss: ", epoch_loss, "\nWeights: ", learn_cost.goal_weights())
 
-        # validation
-        val_loss = 0.0
-        n_val_seen = 0
-        with torch.no_grad():
-            for x0_batch, u_batch in test_loader:
-                q_vec, p_vec, _ = learn_cost()
-                x_pred, u_pred = run_mpc_batch(x0_batch, q_vec, p_vec)
-                u_pred_bt = u_pred.transpose(0, 1)
-                val_loss += (u_batch.to(device) - u_pred_bt).pow(
-                    2
-                ).mean().item() * x0_batch.shape[0]
-                n_val_seen += x0_batch.shape[0]
-            val_loss /= n_val_seen
+        # # validation
+        # val_loss = 0.0
+        # n_val_seen = 0
+        # with torch.no_grad():
+        #     for x0_batch, u_batch in test_loader:
+        #         q_vec, p_vec, _ = learn_cost()
+        #         x_pred, u_pred = run_mpc_batch(x0_batch, q_vec, p_vec)
+        #         u_pred_bt = u_pred.transpose(0, 1)
+        #         val_loss += (u_batch.to(device) - u_pred_bt).pow(
+        #             2
+        #         ).mean().item() * x0_batch.shape[0]
+        #         n_val_seen += x0_batch.shape[0]
+        #     val_loss /= n_val_seen
 
-        elapsed = time.time() - st
-        # save best
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            with torch.no_grad():
-                _, best_p_vec, best_q_state = learn_cost()
+        # elapsed = time.time() - st
+        # # save best
+        # if val_loss < best_val_loss:
+        #     best_val_loss = val_loss
+        #     with torch.no_grad():
+        #         _, best_p_vec, best_q_state = learn_cost()
 
-        if epoch % 10 == 0 or epoch == 1:
-            with torch.no_grad():
-                q_state_now = learn_cost.goal_weights().cpu().numpy()
-                q_now_full = np.concatenate(
-                    [q_state_now, np.array([dx.ctrl_penalty, dx.ctrl_penalty])]
-                )
-                print(
-                    f"[{epoch:04d}] train_loss={epoch_loss:.6f} val_loss={val_loss:.6f} time={elapsed:.2f}s"
-                )
-                print("  q_state (learned diag):", np.round(q_state_now, 6))
-                print("  full q diag (state+ctrl):", np.round(q_now_full, 6))
+        # if epoch % 10 == 0 or epoch == 1:
+        #     with torch.no_grad():
+        #         q_state_now = learn_cost.goal_weights().cpu().numpy()
+        #         q_now_full = np.concatenate(
+        #             [q_state_now, np.array([dx.ctrl_penalty, dx.ctrl_penalty])]
+        #         )
+        #         print(
+        #             f"[{epoch:04d}] train_loss={epoch_loss:.6f} val_loss={val_loss:.6f} time={elapsed:.2f}s"
+        #         )
+        #         print("  q_state (learned diag):", np.round(q_state_now, 6))
+        #         print("  full q diag (state+ctrl):", np.round(q_now_full, 6))
 
     # final test evaluation
     test_loss = 0.0
     n_seen = 0
-    with torch.no_grad():
-        for x0_batch, u_batch in test_loader:
-            q_vec, p_vec, _ = learn_cost()
-            x_pred, u_pred = run_mpc_batch(x0_batch, q_vec, p_vec)
-            u_pred_bt = u_pred.transpose(0, 1)
-            test_loss += (u_batch.to(device) - u_pred_bt).pow(
-                2
-            ).mean().item() * x0_batch.shape[0]
-            n_seen += x0_batch.shape[0]
-        test_loss /= n_seen
+    # with torch.no_grad():
+    for x0_batch, u_batch in test_loader:
+        q_vec, p_vec, _ = learn_cost()
+        x_pred, u_pred = run_mpc_batch(x0_batch, q_vec, p_vec)
+        u_pred_bt = u_pred.transpose(0, 1)
+        test_loss += (u_batch.to(device) - u_pred_bt).pow(
+            2
+        ).mean().item() * x0_batch.shape[0]
+        n_seen += x0_batch.shape[0]
+    test_loss /= n_seen
 
     print("Training done.")
     print("Best val loss:", best_val_loss)
@@ -346,10 +349,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--T", type=int, default=20)
     parser.add_argument("--n_batch", type=int, default=32)
-    parser.add_argument("--n_epochs", type=int, default=10)
-    parser.add_argument("--n_train", type=int, default=20)
-    parser.add_argument("--n_test", type=int, default=2)
-    parser.add_argument("--learn_rate", type=float, default=1e-2)
+    parser.add_argument("--n_epochs", type=int, default=100)
+    parser.add_argument("--n_train", type=int, default=100)
+    parser.add_argument("--n_test", type=int, default=10)
+    parser.add_argument("--learn_rate", type=float, default=5e-3)
     parser.add_argument("--no-cuda", action="store_true")
     parser.add_argument(
         "--freeze_idx",
