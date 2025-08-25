@@ -35,7 +35,7 @@ class BicycleDynamicsWithCost(nn.Module):
 
         # default diag weights for expert (state)
         # We want to learn these in our example
-        goal_weights = torch.tensor([0.0, 0.15, 0.0, 1.0, 0.5], dtype=torch.float32)
+        goal_weights = torch.tensor([0.0, 0.15, 1.0, 0.0, 0.5], dtype=torch.float32)
         self.register_buffer("goal_weights", goal_weights)
         self.ctrl_penalty = 0.001
 
