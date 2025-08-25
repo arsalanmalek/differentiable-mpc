@@ -1,9 +1,11 @@
 """
-IL_Exp_bicycle.py
+trainer.py
 
-Imitation learning experiment for bicycle dynamics.
-Learns structured goal_weights (state-only). p is derived as
-p_state = - sqrt(q_state) * goal_state, so cost = (x - x_goal)^T Q (x - x_goal) + u^T R u.
+Imitation learning for bicycle dynamics to learn cost co-efficients.
+Learns structured goal_weights (state-only).
+p is derived as (p==ct)
+    p_state = - q_state * goal_state
+so cost = 1/2((x - x_goal)^T Q (x - x_goal) + u^T R u).
 
 Default: freeze state indices [0, 3] (X pos and sin(theta)).
 """
