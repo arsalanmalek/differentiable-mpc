@@ -1,6 +1,8 @@
+import os
 import torch
-import torch.nn as nn
+from torch import nn
 import torch.optim as optim
+from datetime import datetime
 
 
 def bicycle_model_step(x, u, dt=0.1, L=2.5):
@@ -62,14 +64,15 @@ def alignment_objective(x, path):
 
 
 # Fix objective function:
-def compute_objective(x_seq, path_points, goal_speed, wp=0.15, ws=0.5, wa=1.0):
+def compute_objective(x_seq, path_points, goal_speed, wp=0.15, ws=0.15, wa=1.0):
     pos_error = []
     angle_error = []
     for i in range(x_seq.shape[0]):
         dists = compute_dist(x_seq[i], path_points)
         min_id = torch.argmin(dists)
-        pos_error.append(dists[torch.clip(min_id - 4, 0) : min_id + 4].sum() / 9)
-        angle_error.append(alignment_objective(x_seq[i], path))
+        dist_slice = dists[torch.clip(min_id - 4, 0) : min_id + 4]
+        pos_error.append(dist_slice.sum() / len(dist_slice))
+        angle_error.append(alignment_objective(x_seq[i], path_points))
     pos_error = torch.stack(pos_error)
     angle_error = torch.stack(angle_error)
     speed_error = (x_seq[:, 3] - goal_speed) ** 2
@@ -78,8 +81,8 @@ def compute_objective(x_seq, path_points, goal_speed, wp=0.15, ws=0.5, wa=1.0):
 
 # Fix objective function:
 def compute_dist(x, path_points):
-    # dists = ((path_points - x) ** 2).sum(dim=1)
-    dists = (path_points[:, 1] - x[1]) ** 2
+    # dists = (path_points[:, 1] - x[1]) ** 2
+    dists = ((path_points - x[:2]) ** 2).sum(dim=1)
     return dists
 
 
@@ -93,14 +96,15 @@ def mpc_optimize(
     steer_lim=0.5,
     accel_lim=2.0,
     lr=0.007,
-    iters=200,
+    iters=100,
 ):
     """
     x0: (1, 4)
     path_points: (T+1, 2)
     """
 
-    u_seq = torch.zeros(T, 2, requires_grad=True)  # [a, δ]
+    # u_seq = torch.zeros(T, 2, requires_grad=True)
+    u_seq = nn.Parameter(torch.zeros(T, 2))  # [a, δ]
     optimizer = optim.Adam([u_seq], lr=lr)
 
     for i in range(iters):
@@ -190,6 +194,9 @@ def sample_initial_state_near_path(
 
 
 if __name__ == "__main__":
+    filename_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join("work", filename_time)
+    os.makedirs(out_dir, exist_ok=True)
     for it in range(20):
         T = 50
         dt = 0.1
@@ -198,17 +205,17 @@ if __name__ == "__main__":
             [torch.linspace(0, 30, T + 1), torch.zeros(T + 1) + torch.randn(1)], dim=1
         )
 
+        x0 = sample_initial_state_near_path(path)
+
         path = torch.stack(
             [
-                torch.linspace(0, 30, T + 1),
+                torch.linspace(-30, 60, T + 1),
                 torch.zeros(T + 1) + torch.randn(1),
-                # torch.zeros(T + 1) - 0.4768,
             ],
             dim=1,
         )
         # path = generate_s_curve_path()
         # x0 = torch.tensor([[0.0, 0.0, 0.0, 0.0]])  # X, Y, θ, v
-        x0 = sample_initial_state_near_path(path)
         # x0 = torch.Tensor([28.5298, 2.5356, 0.9224, 1.3335])
         print(f"\nInitial State: X, Y, theta, v: {x0}")
         goal_speed = 2.5  # m/s
@@ -262,7 +269,7 @@ if __name__ == "__main__":
             traj_x[-1],
             traj_y[-1] + 0.5,
             f"End\nSpeed: {final_speed:.2f} m/s\nDist: {final_dist:.2f} m"
-            f"\nAlignment Error: {format(final_alignment_err, '.2f')}",
+            f"\nAlignment Error: {format(final_alignment_err, '.2f')}\nFinal Cost: {format(f_cost, '.2f')}",
             color="blue",
             fontsize=9,
             ha="center",
@@ -275,4 +282,7 @@ if __name__ == "__main__":
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(f"{'_'.join([format(x, '.1f') for x in x0])}.png", dpi=100)
+        plt.savefig(
+            os.path.join(out_dir, f"{'_'.join([format(x, '.1f') for x in x0])}.png"),
+            dpi=100,
+        )
