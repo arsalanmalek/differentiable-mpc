@@ -36,12 +36,6 @@ def rollout(x0, u_seq, dt, L):
     return torch.stack(x_seq, dim=0)  # (T+1, 4)
 
 
-# def compute_objective(x_seq, path_points, goal_speed, wp=1.0, ws=1.0):
-#     pos_error = ((x_seq[:, :2] - path_points) ** 2).sum(dim=1)  # (T+1,)
-#     speed_error = (x_seq[:, 3] - goal_speed) ** 2
-#     return (wp * pos_error + ws * speed_error).sum()
-
-
 def alignment_objective(x, path):
     pos = x[:2]
     heading = x[2]
@@ -71,8 +65,6 @@ def compute_objective(x_seq, path_points, goal_speed, wp=0.03, ws=25.0, wa=0.2):
         dists = compute_dist(x_seq[i], path_points)
         min_id = torch.argmin(dists)
         pos_error.append(dists[min_id])
-        # dist_slice = dists[torch.clip(min_id - 4, 0) : min_id + 4]
-        # pos_error.append(dist_slice.sum() / len(dist_slice))
         angle_error.append(alignment_objective(x_seq[i], path_points))
     pos_error = torch.stack(pos_error)
     angle_error = torch.stack(angle_error)
@@ -81,17 +73,11 @@ def compute_objective(x_seq, path_points, goal_speed, wp=0.03, ws=25.0, wa=0.2):
     final_stage_cost = (
         wp * pos_error[-1] + ws * speed_error[-1] + wa * angle_error[-1]
     ).sum() * 3
-    # print(
-    #       f"Last stage cost: Position {wp * pos_error[-1]*3} - "
-    #       f"Speed {ws * speed_error[-1]*3} - Angle {wa * angle_error[-1]*3}"
-    # )
     return cost, final_stage_cost
 
 
-# Fix objective function:
 def compute_dist(x, path_points):
     dists = (path_points[:, 1] - x[1]) ** 2
-    # dists = ((path_points - x[:2]) ** 2).sum(dim=1)
     return dists
 
 
@@ -113,11 +99,10 @@ def mpc_optimize(
     path_points: (T+1, 2)
     """
 
-    # TODO: Create manual custom cases to see if cost calculation is correct, convexity could be an issue too
-    # u_seq = torch.zeros(T, 2, requires_grad=True)
+    # TODO: convexity of objective could help in better convergence
     u_seq = nn.Parameter(torch.zeros(T + steps - 1, 2))  # [a, δ]
     optimizer = optim.Adam([u_seq], lr=lr)
-    # optimizer = optim.RMSprop([u_seq], lr=lr)
+
     init_cost = None
     c_x = x0
     for start_pos in range(steps):
@@ -143,7 +128,6 @@ def mpc_optimize(
             optimizer.step()
         c_x = x_seq[1].detach()
 
-    # Final trajectory and clipped controls
     with torch.no_grad():
         u_clipped = torch.cat(
             [
@@ -154,27 +138,9 @@ def mpc_optimize(
         )
         x_seq = rollout(x0, u_clipped, dt, L)
         cost, final_stage_cost = compute_objective(x_seq, path_points, goal_speed)
-        print(f"Final Cost: {cost}")
+        print(f"Final Trajectory Loss: {cost} - Last state loss: {final_stage_cost}")
 
     return x_seq, u_clipped, cost, init_cost, final_stage_cost
-
-
-def generate_s_curve_path(length=30.0, T=30, amplitude=3.0, frequency=0.2):
-    """
-    Generates a smooth S-curve path: x is linear, y is sinusoidal.
-
-    Args:
-        length: total length along x-axis
-        T: number of steps (for MPC horizon)
-        amplitude: peak height of sine curve (in meters)
-        frequency: controls how many waves in the given length
-
-    Returns:
-        path: (T+1, 2) tensor with x, y coordinates
-    """
-    x_vals = torch.linspace(0, length, T + 1)
-    y_vals = amplitude * torch.sin(frequency * x_vals)
-    return torch.stack([x_vals, y_vals], dim=1)  # (T+1, 2)
 
 
 def sample_initial_state_near_path(
@@ -221,13 +187,14 @@ if __name__ == "__main__":
     for it in range(20):
         T = 50
         dt = 0.1
-        # Straight path 30 meters ahead
+        # Path to initialise the state
         path = torch.stack(
             [torch.linspace(0, 30, T + 1), torch.zeros(T + 1) + torch.randn(1)], dim=1
         )
 
         x0 = sample_initial_state_near_path(path)
 
+        # Actual path which is more extended
         path = torch.stack(
             [
                 torch.linspace(-60, 90, T + 1),
@@ -235,35 +202,36 @@ if __name__ == "__main__":
             ],
             dim=1,
         )
-        # path = generate_s_curve_path()
-        # x0 = torch.tensor([[0.0, 0.0, 0.0, 0.0]])  # X, Y, θ, v
-        # x0 = torch.Tensor([28.5298, 2.5356, 0.9224, 1.3335])
-        print(f"\nInitial State: X, Y, theta, v: {x0}")
+
+        print(f"\nInitial State\n\tX, Y, theta, v:\n{x0}")
+
         goal_speed = 3.5  # m/s
-        steps = 5
-        lr = 0.015
-        iters = 200
         L = 1
         steer_lim = 0.5
         accel_lim = 2
+        steps = 5
+        lr = 0.015
+        iters = 200
+
         x_traj, u_traj, f_cost, i_cost, ff_cost = mpc_optimize(
             x0,
             path,
             goal_speed,
-            T=T,
-            dt=dt,
-            steps=steps,
-            lr=lr,
-            iters=iters,
             L=L,
             steer_lim=steer_lim,
             accel_lim=accel_lim,
+            T=T,
+            lr=lr,
+            dt=dt,
+            steps=steps,
+            iters=iters,
         )
 
-        print("Final state: X, Y, theta, v", x_traj[-1])
         print(
-            f"TARGET state: X, Y, theta, v: {torch.tensor((-1, path[-1][1], 0, goal_speed))}"
+            f"Last predicted trajectory state x_{len(x_traj)} - ",
+            x_traj[-1],
         )
+        print(f"Target final state - {[None, path[-1][1].item(), 0, goal_speed]}")
 
         import matplotlib.pyplot as plt
 
@@ -286,13 +254,6 @@ if __name__ == "__main__":
 
         plt.figure(figsize=(10, 6))
         plt.plot(path_x, path_y, "k--", label="Goal Trajectory", linewidth=2)
-        # plt.plot(
-        #     traj_x[:steps],
-        #     traj_y[:steps],
-        #     "r-",
-        #     label="Optimized Trajectory",
-        #     linewidth=2,
-        # )
         plt.plot(
             traj_x[steps:],
             traj_y[steps:],
@@ -311,7 +272,7 @@ if __name__ == "__main__":
             traj_y[-1],
             s=3.5,
             color="red",
-            label=f"final predicted state: {T + steps}",
+            label=f"last trajectory state x_{T + steps}",
             zorder=5,
         )
 
@@ -320,8 +281,8 @@ if __name__ == "__main__":
             traj_x[0],
             traj_y[0] + 0.5,
             f"Start\nSpeed: {initial_speed:.2f} m/s\nDist: {initial_dist:.2f} m"
-            f"\nAlignment Err: {format(initial_alignment_err, '.2f')}"
-            f"\nInitial Cost: {format(i_cost, '.2f')}",
+            f"\Angle Err: {format(initial_alignment_err, '.2f')}"
+            f"\nTraj Loss: {format(i_cost, '.2f')}",
             color="green",
             fontsize=7,
             ha="center",
@@ -331,8 +292,8 @@ if __name__ == "__main__":
             traj_x[-1],
             traj_y[-1] + 0.5,
             f"End\nSpeed: {final_speed:.2f} m/s\nDist: {final_dist:.2f} m"
-            f"\nAlignment Error: {format(final_alignment_err, '.2f')}"
-            f"\nFinal Cost: {format(f_cost, '.2f')}\nLast Step: {format(ff_cost, '.2f')}",
+            f"\nAngle Err: {format(final_alignment_err, '.2f')}"
+            f"\nTraj Loss: {format(f_cost, '.2f')}\nLast Pred Loss: {format(ff_cost, '.2f')}",
             color="red",
             fontsize=7,
             ha="center",
