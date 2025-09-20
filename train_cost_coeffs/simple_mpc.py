@@ -106,6 +106,7 @@ def mpc_optimize(
     accel_lim=2.0,
     lr=0.015,
     iters=200,
+    steps=5,
 ):
     """
     x0: (1, 4)
@@ -114,14 +115,15 @@ def mpc_optimize(
 
     # TODO: Create manual custom cases to see if cost calculation is correct, convexity could be an issue too
     # u_seq = torch.zeros(T, 2, requires_grad=True)
-    u_seq = nn.Parameter(torch.zeros(T, 2))  # [a, δ]
+    u_seq = nn.Parameter(torch.zeros(T + steps - 1, 2))  # [a, δ]
     optimizer = optim.Adam([u_seq], lr=lr)
     # optimizer = optim.RMSprop([u_seq], lr=lr)
     init_cost = None
-    for start_pos in range(1):
+    c_x = x0
+    for start_pos in range(steps):
+        # print(f"\nStep: {start_pos}")
         c_u_seq = u_seq[start_pos : T + start_pos]
-        c_x = x0
-        for i in range(iters):
+        for __ in range(iters):
             optimizer.zero_grad()
 
             u_clipped = torch.cat(
@@ -139,7 +141,7 @@ def mpc_optimize(
                 init_cost = cost.item()
             cost.backward()
             optimizer.step()
-        c_x = x_seq[1]
+        c_x = x_seq[1].detach()
 
     # Final trajectory and clipped controls
     with torch.no_grad():
@@ -228,7 +230,7 @@ if __name__ == "__main__":
 
         path = torch.stack(
             [
-                torch.linspace(-30, 60, T + 1),
+                torch.linspace(-60, 90, T + 1),
                 torch.zeros(T + 1) + torch.randn(1),
             ],
             dim=1,
@@ -238,9 +240,24 @@ if __name__ == "__main__":
         # x0 = torch.Tensor([28.5298, 2.5356, 0.9224, 1.3335])
         print(f"\nInitial State: X, Y, theta, v: {x0}")
         goal_speed = 3.5  # m/s
-
+        steps = 5
+        lr = 0.015
+        iters = 200
+        L = 1
+        steer_lim = 0.5
+        accel_lim = 2
         x_traj, u_traj, f_cost, i_cost, ff_cost = mpc_optimize(
-            x0, path, goal_speed, T=T, dt=dt
+            x0,
+            path,
+            goal_speed,
+            T=T,
+            dt=dt,
+            steps=steps,
+            lr=lr,
+            iters=iters,
+            L=L,
+            steer_lim=steer_lim,
+            accel_lim=accel_lim,
         )
 
         print("Final state: X, Y, theta, v", x_traj[-1])
@@ -268,12 +285,35 @@ if __name__ == "__main__":
         final_alignment_err = alignment_objective(x_traj[-1], path)
 
         plt.figure(figsize=(10, 6))
-        plt.plot(path_x, path_y, "k--", label="Reference Path", linewidth=2)
-        plt.plot(traj_x, traj_y, "r-", label="Optimized Trajectory", linewidth=2)
+        plt.plot(path_x, path_y, "k--", label="Goal Trajectory", linewidth=2)
+        # plt.plot(
+        #     traj_x[:steps],
+        #     traj_y[:steps],
+        #     "r-",
+        #     label="Optimized Trajectory",
+        #     linewidth=2,
+        # )
+        plt.plot(
+            traj_x[steps:],
+            traj_y[steps:],
+            "r:",
+            label="Future Path",
+            linewidth=2,
+        )
 
         # Mark start and end
-        plt.scatter(traj_x[0], traj_y[0], color="green", label="Start", zorder=5)
-        plt.scatter(traj_x[-1], traj_y[-1], color="blue", label="End", zorder=5)
+        for i in range(steps):
+            plt.scatter(
+                traj_x[i], traj_y[i], s=3.5, color="green", label=f"state {i}", zorder=5
+            )
+        plt.scatter(
+            traj_x[-1],
+            traj_y[-1],
+            s=3.5,
+            color="red",
+            label=f"final predicted state: {T + steps}",
+            zorder=5,
+        )
 
         # Annotate
         plt.text(
@@ -283,7 +323,7 @@ if __name__ == "__main__":
             f"\nAlignment Err: {format(initial_alignment_err, '.2f')}"
             f"\nInitial Cost: {format(i_cost, '.2f')}",
             color="green",
-            fontsize=9,
+            fontsize=7,
             ha="center",
         )
 
@@ -293,9 +333,34 @@ if __name__ == "__main__":
             f"End\nSpeed: {final_speed:.2f} m/s\nDist: {final_dist:.2f} m"
             f"\nAlignment Error: {format(final_alignment_err, '.2f')}"
             f"\nFinal Cost: {format(f_cost, '.2f')}\nLast Step: {format(ff_cost, '.2f')}",
-            color="blue",
-            fontsize=9,
+            color="red",
+            fontsize=7,
             ha="center",
+        )
+
+        info_text = (
+            f"vhl length: {L} m\n"
+            f"acc limit: {accel_lim}\n"
+            f"steer limit: {steer_lim}\n"
+            f"Goal Speed: {goal_speed} m/s\n"
+            f"Total Steps: {steps}\n"
+            f"Horizon Size: {T}\n"
+            f"Iterations per step: {iters}\n"
+            f"dt: {dt}\n"
+            f"optim: adam\n"
+            f"lr: {lr}"
+        )
+
+        # place in top-left corner of axes coordinates
+        plt.text(
+            0.02,
+            0.98,
+            info_text,
+            transform=plt.gca().transAxes,
+            ha="left",
+            va="top",
+            fontsize=10,
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.3),
         )
 
         plt.title(f"MPC Optimized Trajectory Following - Final Cost: {f_cost}")
