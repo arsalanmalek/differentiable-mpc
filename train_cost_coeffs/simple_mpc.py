@@ -280,7 +280,7 @@ if __name__ == "__main__":
         plt.text(
             traj_x[0],
             traj_y[0] + 0.5,
-            f"Start\nSpeed: {initial_speed:.2f} m/s\nDist: {initial_dist:.2f} m"
+            f"Start\nSpeed: {initial_speed:.2f} m/s\nY-Dist: {initial_dist:.2f} m"
             f"\Angle Err: {format(initial_alignment_err, '.2f')}"
             f"\nTraj Loss: {format(i_cost, '.2f')}",
             color="green",
@@ -291,7 +291,7 @@ if __name__ == "__main__":
         plt.text(
             traj_x[-1],
             traj_y[-1] + 0.5,
-            f"End\nSpeed: {final_speed:.2f} m/s\nDist: {final_dist:.2f} m"
+            f"End\nSpeed: {final_speed:.2f} m/s\nY-Dist: {final_dist:.2f} m"
             f"\nAngle Err: {format(final_alignment_err, '.2f')}"
             f"\nTraj Loss: {format(f_cost, '.2f')}\nLast Pred Loss: {format(ff_cost, '.2f')}",
             color="red",
