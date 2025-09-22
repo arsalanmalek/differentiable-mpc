@@ -185,7 +185,7 @@ if __name__ == "__main__":
     out_dir = os.path.join("work", filename_time)
     os.makedirs(out_dir, exist_ok=True)
     for it in range(20):
-        T = 50
+        T = 5
         dt = 0.1
         # Path to initialise the state
         path = torch.stack(
@@ -209,7 +209,7 @@ if __name__ == "__main__":
         L = 1
         steer_lim = 0.5
         accel_lim = 2
-        steps = 5
+        steps = 50
         lr = 0.015
         iters = 200
 
@@ -264,9 +264,18 @@ if __name__ == "__main__":
 
         # Mark start and end
         for i in range(steps):
-            plt.scatter(
-                traj_x[i], traj_y[i], s=3.5, color="green", label=f"state {i}", zorder=5
-            )
+            if i < 5:
+                plt.scatter(
+                    traj_x[i],
+                    traj_y[i],
+                    s=3.5,
+                    color="green",
+                    label=f"state {i}",
+                    zorder=5,
+                )
+            else:
+                plt.scatter(traj_x[i], traj_y[i], s=3.5, color="green", zorder=5)
+
         plt.scatter(
             traj_x[-1],
             traj_y[-1],
