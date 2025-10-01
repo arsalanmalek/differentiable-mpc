@@ -4,12 +4,12 @@ from train_cost_coeffs import train
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--T", type=int, default=10, help="horizon length")
-    parser.add_argument("--n_batch", type=int, default=12, help="batch count")
-    parser.add_argument("--n_epochs", type=int, default=50, help="epoch count")
+    parser.add_argument("--T", type=int, default=20, help="horizon length")
+    parser.add_argument("--n_batch", type=int, default=8, help="batch count")
+    parser.add_argument("--n_epochs", type=int, default=10, help="epoch count")
     parser.add_argument("--n_train", type=int, default=64, help="train samples count")
     parser.add_argument("--n_test", type=int, default=8, help="test samples count")
-    parser.add_argument("--learn_rate", type=float, default=5e-3, help="optimizer lr")
+    parser.add_argument("--learn_rate", type=float, default=5e-2, help="optimizer lr")
     parser.add_argument(
         "--freeze_idx",
         type=int,
